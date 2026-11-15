@@ -102,18 +102,17 @@
 #include "netlabel.h"
 #include "audit.h"
 #include "avc_ss.h"
+#include "ss/susfs.h"
 
 #ifdef CONFIG_QCOM_RTIC
 struct selinux_state selinux_state __rticdata;
 #else
 struct selinux_state selinux_state;
+#endif
+
 #ifdef CONFIG_KSU_SUSFS
 extern bool ksu_selinux_hide_running __read_mostly;
-extern int susfs_security_context_to_sid(struct selinux_state *state,
-			    const char *scontext, u32 scontext_len, u32 *sid,
-			    gfp_t gfp);
 #endif // #ifdef CONFIG_KSU_SUSFS
-#endif
 
 /* SECMARK reference count */
 static atomic_t selinux_secmark_refcount = ATOMIC_INIT(0);

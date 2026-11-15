@@ -1,0 +1,4 @@
+# Reproducible kernel build worktree and outputs
+/work/
+/out/
+__pycache__/

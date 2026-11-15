@@ -2448,10 +2448,20 @@ static int watch_one_dir(struct watch_dir *wd)
  * synchronize_srcu on the same SRCU struct, causing a permanent deadlock).
  * Cleanup is deferred to a delayed_work that runs outside the SRCU context.
  */
-static int susfs_handle_sdcard_inode_event(struct fsnotify_mark *mark, u32 mask,
-											struct inode *inode, struct inode *dir,
-											const struct qstr *file_name, u32 cookie)
+static int susfs_handle_sdcard_inode_event(struct fsnotify_group *group,
+										struct inode *inode, u32 mask,
+										const void *data, int data_type,
+										const struct qstr *file_name, u32 cookie,
+										struct fsnotify_iter_info *iter_info)
 {
+	(void)group;
+	(void)inode;
+	(void)data;
+	(void)data_type;
+	(void)cookie;
+	if (!fsnotify_iter_inode_mark(iter_info))
+		return 0;
+
 	if (!file_name || file_name->len != 7 ||
 	    memcmp(file_name->name, "Android", 7))
 		return 0;
@@ -2466,7 +2476,7 @@ static int susfs_handle_sdcard_inode_event(struct fsnotify_mark *mark, u32 mask,
 }
 
 static const struct fsnotify_ops fsnotify_ops = {
-	.handle_inode_event = susfs_handle_sdcard_inode_event,
+	.handle_event = susfs_handle_sdcard_inode_event,
 };
 
 static int add_mark_on_inode(struct inode *inode, u32 mask,
@@ -2557,4 +2567,3 @@ void susfs_init(void) {\
 
 /* No module exit is needed becuase it should never be a loadable kernel module */
 //void __init susfs_exit(void)
-

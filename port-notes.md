@@ -69,9 +69,9 @@
 - [x] Inkypen susfs 分支文件备齐＋delta 地图（整树克隆改逐文件拉取）
 - [x] 核心三文件 5.4 API 审计（结论：可移植，风险集中在 selinux 两处）
 - [x] KSU 接口兼容性核查（全兼容，架构简化：移植文件自带接线）
-- [ ] 调用点逐文件搬增量（含 selinux 三处新点位、ioprio/super 两处新点位）
-- [ ] 写新仓 scripts/build-kernel.sh＋给用户的 build.yaml 工作流文本
-- [ ] 首轮构建→按日志迭代（老规矩：先通知用户再修再推）
+- [x] 调用点逐文件搬增量，包括 SELinux、ioprio 和 super 新点位；25 项均已完成
+- [x] `scripts/build-kernel.sh`、Kconfig 补丁工具、手动触发的 `.github/workflows/build.yaml` 与 AnyKernel3 模板已接线
+- [x] 干净 pinned 源码完整构建、AnyKernel3 打包与校验通过；设备侧 SELinux 策略/布尔值/AVC 回归仍需真机验证
 - **2026-11-15 stat.c 移植完成（1/25）**：port/out/fs/stat.c。删 Inkypen 的 2.1 三处块（generic_fillattr 内调用、getattr_nosec 括号块、顶部两 extern），入 2.4 形态：susfs_def include＋"internal.h"（filename_lookup/getname_flags 在此）、KSU extern 块、getattr_nosec 探针＋括号处理（**丢弃 stat->mnt_id 两处赋值**——5.4 kstat 无此字段、statx ABI 不暴露，子功能自然无效）、vfs_statx 的 fname/filename_lookup 流程＋result_mask 清位、init_rc 钩移植进 vfs_statx_fd（5.4 无 vfs_fstat 函数）。另核：2.4 susfs.c 内唯一的 stat->mnt_id 赋值上游已用 `#if LINUX_VERSION_CODE >= 5.10` 自守，核心文件零改动。
 - **2026-11-15 exec.c 移植完成（2/25）**：port/out/fs/exec.c。5.4 的 do_execveat_common 是薄包装、主体在 __do_execve_file，故 2.4 的头/尾逻辑全移植进 __do_execve_file：IS_ERR 后入头逻辑（no_su→sdcard 键二选 execveat/_sucompat→pid1 preinit 设立），orig_flow 标签置于 NPROC 注释前（与 5.10 同位）；尾部在 exec_binprm 成功后入 post_sucompat＋preinit post。5.4 专属适配：preinit 重跑前除 free_bprm 外还要 kfree(pathbuf)、pathbuf/file 置 NULL（file 已交 bprm 释放）；preinit 返回 false 时 5.10 的 goto out_free 在 5.4 改为穿落正常成功收尾（rseq/acct/in_exec 复位必须走）。sdcard 静态键在 susfs.c:2373 有定义。
 - **2026-11-15 open.c 移植完成（3/25）**：port/out/fs/open.c。Inkypen 的 OPEN_REDIRECT 块（do_sys_open 内）与 2.4 核心接口逐字兼容（susfs_open_redirect_spoof_do_sys_openat 同签名、WITHOUT_UID_CHECK 宏两版都在），原样保留；只加 2.4 的 faccessat 三件：susfs_def include、extern 块、retry 处 fname/filename_lookup 流程（handler 第四参按上游传 NULL；5.4 的 do_faccessat 是 3 参非 static、旧 override_cred 结构，不碍事）。
@@ -94,3 +94,24 @@
 - **2026-11-15 fs/proc/base.c 核验免移植（19/25）**：Inkypen 的 include 守卫、do_proc_readlink 的 OPEN_REDIRECT 块（susfs_open_redirect_spoof_do_proc_readlink 在 2.4 susfs.c:1698 有定义）、map_files 的 SUS_MAP 跳过块均与 2.4 一致。
 - **2026-11-15 fs/proc/fd.c 移植完成（20/25）**：port/out/fs/proc/fd.c。删其 OPEN_REDIRECT 块与 extern（susfs_open_redirect_spoof_seq_show 在 2.4 核心已删除）及 mnt_id/ino 局部；补 2.4 的 SUS_KSTAT 块（app uid＋sus_kstat 命中→susfs_sus_kstat_spoof_proc_fd_seq_show 伪造 mnt_id/ino 后 goto bypass）；其 SUS_MOUNT 块与 2.4 逻辑等价保留，标签守卫由 MOUNT||OPEN_REDIRECT 改 MOUNT||KSTAT；include 守卫换 CONFIG_KSU_SUSFS。
 - **2026-11-15 fs/proc/task_mmu.c 移植完成（21/25）**：port/out/fs/proc/task_mmu.c。其余块（include 守卫、KSTAT extern、show_smap/rollup/pagemap 的 SUS_MAP 跳过）与 2.4 等价保留；唯一换代的是 show_map_vma 的 OPEN_REDIRECT：2.1 的缓冲版 susfs_open_redirect_spoof_show_map_vma（char* 出参＋尾部打印/kfree＋orig_flow 标签）整体换成 2.4 的 srcu 版（susfs_srcu_open_redirect 在 2.4 susfs.c:1463 DEFINE_SRCU；char** 出参、锁内打印完直接 return），本地声明与尾部块一并删除。5.4 适配：task_mmu.c 与 susfs_def.h 均未引 srcu.h，在 extern 块内补 #include <linux/srcu.h> 保险。
+
+## 2026-11-16：SELinux 缺口与构建接线审计
+
+### 可追溯来源与适配依据
+
+- SUSFS 上游：[`ShirkNeko/susfs4ksu` 固定 commit `6dff25f`](https://github.com/ShirkNeko/susfs4ksu/commit/6dff25f2b2508f91df309e537771d612dccd201a)，补丁为 [`50_add_susfs_in_gki-android12-5.10.patch`](https://github.com/ShirkNeko/susfs4ksu/blob/6dff25f2b2508f91df309e537771d612dccd201a/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch)。上游 SELinux 逻辑要求 `selinuxfs` 的 context/access 事务都使用隐藏类型感知的处理器；context 分支此前已存在，本次补齐 access handler 与 `write_op[SEL_ACCESS]` 分发。
+- 5.4 移植基线：[`Inkypen79/kernel_xiaomi_odin` commit `50e0141`](https://github.com/Inkypen79/kernel_xiaomi_odin/commit/50e0141b29b62be21632c768e4818348098ac6cd)。其 SELinux 策略存于 `state->ss`，通过 `policy_rwlock` 保护 `policydb`、`sidtab`、class map 与 `latest_granting`；不同于 5.10 补丁中的 `state->policy`/RCU policy 指针。新增实现按 5.4 读写锁和 `hashtab` 布局适配，policy-load 与 boolean 更新在拿写锁前判断 KSU domain，避免递归拿锁，同时为 SUSFS RCU 查询单独持有 RCU 读锁。
+- BakaSU 固定版：[`Baka-SU/BakaSU` commit `548d1dda`](https://github.com/Baka-SU/BakaSU/commit/548d1dda060ca198823d8808804d01f5209ef4a)。该版 `kernel/setup.sh` 将源码检出到内核树 `KernelSU/`，并将 `drivers/kernelsu` 链接至 `KernelSU/kernel`；其 SUSFS Kconfig 菜单以 `KSU_SUSFS_SUS_MAP` 开始，缺 `KSU_SUSFS_AVD` 与 `KSU_SUSFS_PRIORITY_UID_FILTER` 两项。新 helper 在唯一菜单尾部加入两项，校验依赖和默认值，并在部分/重复/错误状态时停止而不改文件。
+- 构建入口固定上述内核与 BakaSU commit，从 AOSP `android-17.0.0_r1` 优先选 `clang-r574158`、缺失时选 tag 内最高版本；稀疏检出用 HTTP/1.1 最多重试三次，失败后退回 apt.llvm.org LLVM 21。固定 AnyKernel3 commit `41f04bdb4ee30a44e429c2c1131d5e8bb32b15f1`。Actions 仅手动触发，输出 Image、配置、校验和及 AnyKernel3 ZIP 工件。
+
+### 检查记录
+
+- `bash -n scripts/build-kernel.sh`、Python 编译检查、Kconfig helper 首次插入/重复运行/部分状态拒绝测试及 `git diff --check` 均通过；Actions workflow 此前通过 `actionlint`。
+- `JOBS=8 INSTALL_DEPS=0 bash scripts/build-kernel.sh` 从干净 pinned 源码成功完成：UTS release `5.4.302-inkypen-v2`，Image 与内核配置匹配，最终配置中的 `CONFIG_KSU_SUSFS_AVD`、`CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER` 均为 `y`。SHA-256 清单三项校验通过，AnyKernel3 ZIP 无压缩错误、共 28 个文件，模板使用 `BLOCK=boot`。
+- 全量编译揭示并修正 5.4 API/声明差异：fsnotify 观察器改用 `fsnotify_ops.handle_event` 与 `iter_info`；`susfs_def.h` 直接包含 `cred.h`；SELinux SUSFS 声明移出 `CONFIG_QCOM_RTIC` 分支并集中到共享头。`cpio`、`rsync` 均加入主机依赖。MODPOST 留有一条非致命的基线警告：`embms_tm_multicast_recv` 是 static `EXPORT_SYMBOL`。
+- 未在真机刷写；SELinux 策略装载、布尔开关、AVC 行为和设备启动回归仍未验证，不据此宣称设备兼容已通过。
+
+固定版 AnyKernel3 的 `ak3-core.sh` 会依次识别 `Image`/`Image-dtb` 等内核文件，并在 `BLOCK=boot` 时从标准 by-name 路径解析 boot 分区；因此模板使用 `BLOCK=boot`，不硬编码某个 Android 设备节点路径。
+
+本次构建从固定 `android-17.0.0_r1` tag 发现 `clang-r574158` 不存在，脚本按 tag 内版本排序选中最高目录 `clang-r596125`（报告为 Android Clang 22.0.2）。首轮依赖列表漏装 `rsync`，导致 `headers_install` 在最终复制 UAPI 头文件时停止；`rsync` 已补入 `scripts/build-kernel.sh`，并已安装后恢复该步骤。
+AnyKernel3 复核来源：[`osm0sis/AnyKernel3` 固定 commit `41f04bd`](https://github.com/osm0sis/AnyKernel3/commit/41f04bdb4ee30a44e429c2c1131d5e8bb32b15f1)，具体规则见该版本 [`tools/ak3-core.sh`](https://github.com/osm0sis/AnyKernel3/blob/41f04bdb4ee30a44e429c2c1131d5e8bb32b15f1/tools/ak3-core.sh)：`flash_boot` 顺序识别 `Image`/`Image-dtb` 等镜像，`BLOCK=boot` 会尝试多个标准 by-name 目录。

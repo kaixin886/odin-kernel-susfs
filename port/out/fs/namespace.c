@@ -767,7 +767,7 @@ struct mount *__lookup_mnt(struct vfsmount *mnt, struct dentry *dentry)
 	//   we also spoof for the zygote spawned processes that are marked umounted,
 	//   with this hack, we do not even need to umount those sus mounts.
 	// - The solution here is simply to return the legit mount.
-	if (susfs_is_current_proc_umounted()) {
+	if (susfs_is_current_proc_umounted_for_zygote_next()) {
 		hlist_for_each_entry_rcu(p, head, mnt_hash)
 			if (p->mnt_id < DEFAULT_KSU_MNT_ID && &p->mnt_parent->mnt == mnt && p->mnt_mountpoint == dentry)
 				return p;

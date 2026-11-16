@@ -12,7 +12,7 @@ TOOLBIN="$WORK/toolchain/bin"
 
 KERNEL_URL="https://github.com/Inkypen79/kernel_xiaomi_odin.git"
 KERNEL_REF="50e0141b29b62be21632c768e4818348098ac6cd"
-BAKASU_REF="548d1dda060ca198823d8808804d01f5209ef4a9"
+BAKASU_REF="252b15203940c00570c65c0d33db12d9e76c4dff"
 BAKASU_URL="https://github.com/Baka-SU/BakaSU.git"
 CLANG_WANT="clang-r574158"
 AK3_REF="41f04bdb4ee30a44e429c2c1131d5e8bb32b15f1"
@@ -149,6 +149,14 @@ PYEOF
 step "enable the two SUSFS v2.4 Kconfig features"
 python3 "$ROOT/scripts/add-bakasu-susfs-kconfig.py" "$KSRC/KernelSU/kernel/Kconfig"
 
+step "integrate Boeffla wakelock blocker (in-tree, empty list)"
+cp -a "$ROOT/prep-opt/drivers/wakelock-blocker" "$KSRC/drivers/wakelock-blocker"
+(cd "$KSRC" && patch -p1 --no-backup-if-mismatch < "$ROOT/prep-opt/patches/wakelock-blocker-callsites.patch")
+grep -q 'check_for_block(ws)' "$KSRC/drivers/base/power/wakeup.c" || fail "wakelock blocker hook missing in wakeup.c"
+grep -q 'source "drivers/wakelock-blocker/Kconfig"' "$KSRC/drivers/Kconfig" || fail "wakelock blocker Kconfig wiring missing"
+grep -q 'obj-$(CONFIG_BOEFFLA_WL_BLOCKER)' "$KSRC/drivers/Makefile" || fail "wakelock blocker Makefile wiring missing"
+grep -q 'define LIST_WL_DEFAULT.*""' "$KSRC/drivers/wakelock-blocker/boeffla_wl_blocker.h" || fail "wakelock blocker default list is not empty"
+
 step "audit BakaSU/SUSFS wiring"
 [[ -L "$KSRC/drivers/kernelsu" ]] || fail "drivers/kernelsu is not the BakaSU symlink"
 [[ "$(readlink -f "$KSRC/drivers/kernelsu/Kconfig")" == "$(readlink -f "$KSRC/KernelSU/kernel/Kconfig")" ]] || fail "BakaSU Kconfig symlink does not resolve to pinned source"
@@ -172,11 +180,42 @@ CFG="$KOUT/.config"
   --enable KSU --enable KPROBES --enable KALLSYMS_ALL \
   --enable EXT4_FS --enable HEADERS_INSTALL \
   --enable KSU_SUSFS --enable KSU_SUSFS_AVD \
-  --enable KSU_SUSFS_PRIORITY_UID_FILTER
+  --enable KSU_SUSFS_PRIORITY_UID_FILTER \
+  --enable BOEFFLA_WL_BLOCKER \
+  --disable CPU_FREQ_DEFAULT_GOV_PERFORMANCE \
+  --enable CPU_FREQ_DEFAULT_GOV_SCHEDUTIL \
+  --enable TCP_CONG_ADVANCED \
+  --enable TCP_CONG_BBR --enable DEFAULT_BBR --disable DEFAULT_CUBIC \
+  --enable IDLE_PAGE_TRACKING
+
+step "dynamic layer: rcu_nocbs into built-in cmdline"
+CUR_CMDLINE="$(sed -n 's/^CONFIG_CMDLINE="\(.*\)"$/\1/p' "$CFG")"
+case " $CUR_CMDLINE " in
+  *" rcu_nocbs="*) echo "cmdline already carries rcu_nocbs: $CUR_CMDLINE" ;;
+  *) "$KSRC/scripts/config" --file "$CFG" --set-str CMDLINE "$CUR_CMDLINE rcu_nocbs=0-7" ;;
+esac
+
+step "dynamic layer: zram default compressor -> lz4"
+python3 - "$KSRC/drivers/block/zram/zram_drv.c" <<'PYEOF'
+import sys
+p = sys.argv[1]
+src = open(p).read()
+old = 'static const char *default_compressor = "lzo-rle";'
+assert old in src, "zram default_compressor line not found"
+src = src.replace(old, 'static const char *default_compressor = "lz4";', 1)
+open(p, "w").write(src)
+print("zram default_compressor -> lz4")
+PYEOF
+
 make "${MAKE_ARGS[@]}" olddefconfig
 for config in CONFIG_KSU CONFIG_KSU_SUSFS CONFIG_KSU_SUSFS_AVD CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER; do
   grep -q "^$config=y$" "$CFG" || fail "$config was dropped by olddefconfig"
 done
+for config in CONFIG_BOEFFLA_WL_BLOCKER CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL CONFIG_TCP_CONG_BBR CONFIG_DEFAULT_BBR CONFIG_IDLE_PAGE_TRACKING; do
+  grep -q "^$config=y$" "$CFG" || fail "$config was dropped by olddefconfig (dynamic layer)"
+done
+grep -q '^CONFIG_HZ=250$' "$CFG" || fail "HZ drifted from 250 (dynamic layer)"
+grep -q '^CONFIG_CMDLINE=".*rcu_nocbs=' "$CFG" || fail "rcu_nocbs missing from built-in cmdline (dynamic layer)"
 
 step "install UAPI headers for BakaSU preinit codegen"
 make "${MAKE_ARGS[@]}" headers_install

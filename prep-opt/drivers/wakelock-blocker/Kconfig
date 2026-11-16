@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: GPL-2.0
+#
+# Boeffla generic wakelock blocker (andip71, v1.1.0) - in-tree
+# integration for odin 5.4. The source copy is taken from the
+# blu_spark lineage (engstk/op7), which already ships an empty
+# compiled-in default list; see SOURCE.md in this directory.
+# Default stays n on purpose: scripts/build-kernel.sh enables this
+# symbol explicitly for the resukisu variant only, so every other
+# variant/config path stays bit-identical to the verified builds.
+
+config BOEFFLA_WL_BLOCKER
+	bool "Boeffla generic wakelock blocker driver"
+	depends on PM
+	default n
+	help
+	  Block selected kernel wakelocks by name on the wakeup_source
+	  activation path (drivers/base/power/wakeup.c). The block lists
+	  are runtime sysfs knobs under
+	  /sys/class/misc/boeffla_wakelock_blocker/ (wakelock_blocker
+	  and wakelock_blocker_default, semicolon-separated names).
+
+	  The compiled-in default list is EMPTY for odin: with no names
+	  configured, wl_blocker_active stays false, the wakeup.c hook
+	  is a no-op and suspend behaviour is identical to a kernel
+	  without this driver. Only add names at runtime, after checking
+	  /sys/kernel/wakeup_sources on the real device.

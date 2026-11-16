@@ -113,6 +113,30 @@ curl -fsSL "https://raw.githubusercontent.com/Baka-SU/BakaSU/$BAKASU_REF/kernel/
 git -C "$KSRC/KernelSU" checkout --detach -q "$BAKASU_REF"
 [[ "$(git -C "$KSRC/KernelSU" rev-parse HEAD)" == "$BAKASU_REF" ]] || fail "BakaSU checkout is not pinned"
 
+step "guard sync-up selinux_hide setxattr call for SUSFS builds"
+python3 - "$KSRC/KernelSU/kernel/feature/selinux_hide.c" <<'PYEOF'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+source = path.read_text()
+call = """    ret = selinux_hide_init_setxattr();
+    if (ret) {
+        pr_err("selinux_hide: init: setxattr helpers err: %d\\n", ret);
+        return ret;
+    }
+"""
+guarded = "#ifndef KSU_COMPAT_HAS_SUSFS_FEATURE_SELINUX_HIDE\n" + call + "#endif\n"
+if guarded in source:
+    print("selinux_hide setxattr call already guarded")
+    raise SystemExit(0)
+if source.count(call) != 1:
+    raise SystemExit("ERROR: expected exactly one unguarded selinux_hide_init_setxattr call")
+source = source.replace(call, guarded)
+path.write_text(source)
+print("guarded selinux_hide_init_setxattr call (its definition is SUSFS-guarded out)")
+PYEOF
+
 step "overlay the complete SUSFS v2.4.0 port"
 cp -a "$ROOT/port/out/." "$KSRC/"
 grep -q 'SUSFS_VERSION "v2.4.0"' "$KSRC/include/linux/susfs.h" || fail "overlay is not SUSFS v2.4.0"

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Reproducible Xiaomi MIX 4 (odin) 5.4 kernel build with BakaSU + SUSFS v2.4.0.
+# Reproducible Xiaomi MIX 4 (odin) 5.4 kernel build with BakaSU + SUSFS v2.3.0.
 # Run from any directory; artifacts are written to <repo>/out/.
 set -euo pipefail
 
@@ -12,7 +12,7 @@ TOOLBIN="$WORK/toolchain/bin"
 
 KERNEL_URL="https://github.com/Inkypen79/kernel_xiaomi_odin.git"
 KERNEL_REF="50e0141b29b62be21632c768e4818348098ac6cd"
-BAKASU_REF="a671d80097e887526115400402d87cac568daa91"
+BAKASU_REF="548d1dda060ca198823d8808804d01f5209ef4a9"
 BAKASU_URL="https://github.com/Baka-SU/BakaSU.git"
 CLANG_WANT="clang-r574158"
 AK3_REF="41f04bdb4ee30a44e429c2c1131d5e8bb32b15f1"
@@ -21,9 +21,9 @@ JOBS="${JOBS:-$(nproc)}"
 step() { printf '\n===== %s =====\n' "$*"; }
 fail() { echo "ERROR: $*" >&2; exit 1; }
 
-[[ -d "$ROOT/port/out" ]] || fail "run this script from the repository checkout"
-[[ -f "$ROOT/port/out/security/selinux/ss/services.c" ]] || fail "missing completed services.c port"
-[[ -f "$ROOT/port/out/security/selinux/selinuxfs.c" ]] || fail "missing completed selinuxfs.c port"
+[[ -d "$ROOT/port23/out" ]] || fail "run this script from the repository checkout"
+[[ -f "$ROOT/port23/out/include/linux/susfs.h" ]] || fail "missing SUSFS v2.3.0 susfs.h port"
+[[ -f "$ROOT/port23/out/security/selinux/hooks.c" ]] || fail "missing SUSFS v2.3.0 hooks.c port"
 
 if [[ "${INSTALL_DEPS:-1}" == 1 ]]; then
   step "install host build dependencies"
@@ -113,36 +113,16 @@ curl -fsSL "https://raw.githubusercontent.com/Baka-SU/BakaSU/$BAKASU_REF/kernel/
 git -C "$KSRC/KernelSU" checkout --detach -q "$BAKASU_REF"
 [[ "$(git -C "$KSRC/KernelSU" rev-parse HEAD)" == "$BAKASU_REF" ]] || fail "BakaSU checkout is not pinned"
 
-step "verify upstream selinux_hide link fix is present"
-python3 - "$KSRC/KernelSU/kernel/feature/selinux_hide.c" <<'PYEOF'
-import sys
-from pathlib import Path
-
-# sync-up a671d800 moved the selinux_hide_init_setxattr definition out of the
-# SUSFS guard block so the call in ksu_selinux_hide_enable always links.
-# Older sync-up pins compile the definition away in SUSFS builds and die at
-# the vmlinux link; fail here instead of 15 minutes later.
-source = Path(sys.argv[1]).read_text()
-enable = source.find("static int ksu_selinux_hide_enable()")
-if enable < 0:
-    raise SystemExit("ERROR: ksu_selinux_hide_enable not found in selinux_hide.c")
-window = source[max(0, enable - 12000):enable]
-defpos = window.rfind("int selinux_hide_init_setxattr()")
-endifpos = window.rfind("#endif // #ifndef KSU_COMPAT_HAS_SUSFS_FEATURE_SELINUX_HIDE")
-if defpos < 0:
-    raise SystemExit("ERROR: selinux_hide_init_setxattr definition not found near its caller")
-if endifpos < 0 or endifpos > defpos:
-    raise SystemExit("ERROR: selinux_hide_init_setxattr is still inside the SUSFS guard; upstream fix missing")
-print("verified: selinux_hide_init_setxattr is defined outside the SUSFS guard")
-PYEOF
-
-step "overlay the complete SUSFS v2.4.0 port"
-cp -a "$ROOT/port/out/." "$KSRC/"
-grep -q 'SUSFS_VERSION "v2.4.0"' "$KSRC/include/linux/susfs.h" || fail "overlay is not SUSFS v2.4.0"
+step "overlay the complete SUSFS v2.3.0 port"
+cp -a "$ROOT/port23/out/." "$KSRC/"
+grep -q 'SUSFS_VERSION "v2.3.0"' "$KSRC/include/linux/susfs.h" || fail "overlay is not SUSFS v2.3.0"
 for required in \
-  fs/susfs.c security/selinux/selinuxfs.c security/selinux/ss/services.c \
-  security/selinux/ss/susfs.h \
-  fs/exec.c fs/namei.c fs/namespace.c kernel/sys.c block/ioprio.c; do
+  drivers/input/input.c \
+  fs/exec.c fs/namei.c fs/namespace.c fs/open.c fs/proc/task_mmu.c \
+  fs/proc_namespace.c fs/read_write.c fs/stat.c fs/susfs.c \
+  include/linux/susfs.h include/linux/susfs_def.h \
+  kernel/reboot.c kernel/sys.c \
+  security/selinux/hooks.c; do
   [[ -s "$KSRC/$required" ]] || fail "missing overlay file $required"
 done
 
@@ -169,9 +149,6 @@ path.write_text(source)
 print("exported do_mount for BakaSU's pre-5.9 mount compatibility path")
 PYEOF
 
-step "enable the two SUSFS v2.4 Kconfig features"
-python3 "$ROOT/scripts/add-bakasu-susfs-kconfig.py" "$KSRC/KernelSU/kernel/Kconfig"
-
 step "integrate Boeffla wakelock blocker (in-tree, empty list)"
 cp -a "$ROOT/prep-opt/drivers/wakelock-blocker" "$KSRC/drivers/wakelock-blocker"
 (cd "$KSRC" && patch -p1 --no-backup-if-mismatch < "$ROOT/prep-opt/patches/wakelock-blocker-callsites.patch")
@@ -183,11 +160,23 @@ grep -q 'define LIST_WL_DEFAULT.*""' "$KSRC/drivers/wakelock-blocker/boeffla_wl_
 step "audit BakaSU/SUSFS wiring"
 [[ -L "$KSRC/drivers/kernelsu" ]] || fail "drivers/kernelsu is not the BakaSU symlink"
 [[ "$(readlink -f "$KSRC/drivers/kernelsu/Kconfig")" == "$(readlink -f "$KSRC/KernelSU/kernel/Kconfig")" ]] || fail "BakaSU Kconfig symlink does not resolve to pinned source"
-for symbol in KSU_SUSFS_AVD KSU_SUSFS_PRIORITY_UID_FILTER; do
+for symbol in \
+  KSU_SUSFS KSU_SUSFS_SUS_PATH KSU_SUSFS_SUS_MOUNT KSU_SUSFS_SUS_KSTAT \
+  KSU_SUSFS_SUS_MAP KSU_SUSFS_OPEN_REDIRECT KSU_SUSFS_SPOOF_UNAME \
+  KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG KSU_SUSFS_ENABLE_LOG \
+  KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS; do
   [[ "$(grep -c "^config $symbol$" "$KSRC/KernelSU/kernel/Kconfig")" == 1 ]] || fail "$symbol Kconfig declaration missing or duplicated"
 done
+for symbol in KSU_SUSFS_AVD KSU_SUSFS_PRIORITY_UID_FILTER; do
+  [[ "$(grep -c "^config $symbol$" "$KSRC/KernelSU/kernel/Kconfig")" == 0 ]] || fail "v2.4-only symbol $symbol present in pinned BakaSU Kconfig; wrong pin?"
+done
 if grep -q 'bakasu-wired' "$KSRC/KernelSU/kernel/compat/kernel_compat.c" "$KSRC/include/linux/susfs_def.h"; then
-  fail "v2.1-only compatibility glue was copied into the v2.4 build"
+  fail "v2.1-only compatibility glue was copied into the v2.3 build"
+fi
+[[ "$(grep -c 'ksu_selinux_hide_running' "$KSRC/security/selinux/hooks.c")" -ge 2 ]] || fail "hooks.c is missing the BakaSU selinux_hide handshake string"
+if grep -qs 'susfs_add_sus_type\|KSU_SUSFS_AVD\|KSU_SUSFS_PRIORITY_UID_FILTER\|susfs_selinux_setprocattr' \
+  "$KSRC/fs/susfs.c" "$KSRC/include/linux/susfs.h" "$KSRC/include/linux/susfs_def.h"; then
+  fail "v2.4-only symbols leaked into the v2.3 overlay"
 fi
 for hook in \
   ksu_handle_setresuid ksu_handle_execveat ksu_handle_faccessat \
@@ -202,8 +191,7 @@ CFG="$KOUT/.config"
 "$KSRC/scripts/config" --file "$CFG" \
   --enable KSU --enable KPROBES --enable KALLSYMS_ALL \
   --enable EXT4_FS --enable HEADERS_INSTALL \
-  --enable KSU_SUSFS --enable KSU_SUSFS_AVD \
-  --enable KSU_SUSFS_PRIORITY_UID_FILTER \
+  --enable KSU_SUSFS \
   --enable BOEFFLA_WL_BLOCKER \
   --disable CPU_FREQ_DEFAULT_GOV_PERFORMANCE \
   --enable CPU_FREQ_DEFAULT_GOV_SCHEDUTIL \
@@ -231,8 +219,19 @@ print("zram default_compressor -> lz4")
 PYEOF
 
 make "${MAKE_ARGS[@]}" olddefconfig
-for config in CONFIG_KSU CONFIG_KSU_SUSFS CONFIG_KSU_SUSFS_AVD CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER; do
+for config in \
+  CONFIG_KSU \
+  CONFIG_KSU_SUSFS CONFIG_KSU_SUSFS_SUS_PATH CONFIG_KSU_SUSFS_SUS_MOUNT \
+  CONFIG_KSU_SUSFS_SUS_KSTAT CONFIG_KSU_SUSFS_SUS_MAP \
+  CONFIG_KSU_SUSFS_OPEN_REDIRECT CONFIG_KSU_SUSFS_SPOOF_UNAME \
+  CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG CONFIG_KSU_SUSFS_ENABLE_LOG \
+  CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS; do
   grep -q "^$config=y$" "$CFG" || fail "$config was dropped by olddefconfig"
+done
+for config in CONFIG_KSU_SUSFS_AVD CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER; do
+  if grep -q "^$config=y$" "$CFG"; then
+    fail "$config must stay off for SUSFS v2.3"
+  fi
 done
 for config in CONFIG_BOEFFLA_WL_BLOCKER CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL CONFIG_TCP_CONG_BBR CONFIG_DEFAULT_BBR CONFIG_IDLE_PAGE_TRACKING; do
   grep -q "^$config=y$" "$CFG" || fail "$config was dropped by olddefconfig (dynamic layer)"
@@ -262,8 +261,8 @@ git -C "$AK3_DIR" checkout -q --detach FETCH_HEAD
 rm -rf "$AK3_DIR/.git" "$AK3_DIR/.github"
 cp "$ROOT/scripts/ak3/anykernel.sh" "$AK3_DIR/anykernel.sh"
 cp "$OUT/Image" "$AK3_DIR/Image"
-(cd "$AK3_DIR" && zip -r -q "$OUT/odin-susfs-v2.4.0-bakasu-ak3.zip" .)
-(cd "$OUT" && sha256sum Image kernel.config odin-susfs-v2.4.0-bakasu-ak3.zip > SHA256SUMS)
+(cd "$AK3_DIR" && zip -r -q "$OUT/odin-susfs-v2.3.0-bakasu-ak3.zip" .)
+(cd "$OUT" && sha256sum Image kernel.config odin-susfs-v2.3.0-bakasu-ak3.zip > SHA256SUMS)
 
 step "build complete"
 cat "$OUT/utsrelease.txt" || true

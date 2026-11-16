@@ -12,7 +12,7 @@ TOOLBIN="$WORK/toolchain/bin"
 
 KERNEL_URL="https://github.com/Inkypen79/kernel_xiaomi_odin.git"
 KERNEL_REF="50e0141b29b62be21632c768e4818348098ac6cd"
-BAKASU_REF="252b15203940c00570c65c0d33db12d9e76c4dff"
+BAKASU_REF="a671d80097e887526115400402d87cac568daa91"
 BAKASU_URL="https://github.com/Baka-SU/BakaSU.git"
 CLANG_WANT="clang-r574158"
 AK3_REF="41f04bdb4ee30a44e429c2c1131d5e8bb32b15f1"
@@ -113,28 +113,27 @@ curl -fsSL "https://raw.githubusercontent.com/Baka-SU/BakaSU/$BAKASU_REF/kernel/
 git -C "$KSRC/KernelSU" checkout --detach -q "$BAKASU_REF"
 [[ "$(git -C "$KSRC/KernelSU" rev-parse HEAD)" == "$BAKASU_REF" ]] || fail "BakaSU checkout is not pinned"
 
-step "guard sync-up selinux_hide setxattr call for SUSFS builds"
+step "verify upstream selinux_hide link fix is present"
 python3 - "$KSRC/KernelSU/kernel/feature/selinux_hide.c" <<'PYEOF'
 import sys
 from pathlib import Path
 
-path = Path(sys.argv[1])
-source = path.read_text()
-call = """    ret = selinux_hide_init_setxattr();
-    if (ret) {
-        pr_err("selinux_hide: init: setxattr helpers err: %d\\n", ret);
-        return ret;
-    }
-"""
-guarded = "#ifndef KSU_COMPAT_HAS_SUSFS_FEATURE_SELINUX_HIDE\n" + call + "#endif\n"
-if guarded in source:
-    print("selinux_hide setxattr call already guarded")
-    raise SystemExit(0)
-if source.count(call) != 1:
-    raise SystemExit("ERROR: expected exactly one unguarded selinux_hide_init_setxattr call")
-source = source.replace(call, guarded)
-path.write_text(source)
-print("guarded selinux_hide_init_setxattr call (its definition is SUSFS-guarded out)")
+# sync-up a671d800 moved the selinux_hide_init_setxattr definition out of the
+# SUSFS guard block so the call in ksu_selinux_hide_enable always links.
+# Older sync-up pins compile the definition away in SUSFS builds and die at
+# the vmlinux link; fail here instead of 15 minutes later.
+source = Path(sys.argv[1]).read_text()
+enable = source.find("static int ksu_selinux_hide_enable()")
+if enable < 0:
+    raise SystemExit("ERROR: ksu_selinux_hide_enable not found in selinux_hide.c")
+window = source[max(0, enable - 12000):enable]
+defpos = window.rfind("int selinux_hide_init_setxattr()")
+endifpos = window.rfind("#endif // #ifndef KSU_COMPAT_HAS_SUSFS_FEATURE_SELINUX_HIDE")
+if defpos < 0:
+    raise SystemExit("ERROR: selinux_hide_init_setxattr definition not found near its caller")
+if endifpos < 0 or endifpos > defpos:
+    raise SystemExit("ERROR: selinux_hide_init_setxattr is still inside the SUSFS guard; upstream fix missing")
+print("verified: selinux_hide_init_setxattr is defined outside the SUSFS guard")
 PYEOF
 
 step "overlay the complete SUSFS v2.4.0 port"

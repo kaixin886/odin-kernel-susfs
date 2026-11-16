@@ -251,9 +251,8 @@ out:
 }
 
 #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-/* port-5.4: parallel filtered copies of the show_* functions above,
- * built from this tree's 5.4 bodies (show_options2 handling kept);
- * upstream 2.4 carries the same design on 5.10 bodies. */
+/* Filtered copies of the show_* functions above, adapted to this 5.4 tree;
+ * retain this tree's show_options2 handling. */
 static int susfs_show_vfsmnt(struct seq_file *m, struct vfsmount *mnt)
 {
 	struct proc_mounts *p = m->private;
@@ -480,7 +479,7 @@ static int mounts_release(struct inode *inode, struct file *file)
 static int mounts_open(struct inode *inode, struct file *file)
 {
 #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-	if (static_branch_likely(&susfs_is_hide_sus_mnts_for_non_su_procs_enabled)) {
+	if (static_branch_unlikely(&susfs_is_hide_sus_mnts_for_non_su_procs_enabled)) {
 		if (likely(!susfs_is_current_ksu_domain()))
 			return mounts_open_common(inode, file, susfs_show_vfsmnt);
 	}
@@ -491,7 +490,7 @@ static int mounts_open(struct inode *inode, struct file *file)
 static int mountinfo_open(struct inode *inode, struct file *file)
 {
 #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-	if (static_branch_likely(&susfs_is_hide_sus_mnts_for_non_su_procs_enabled)) {
+	if (static_branch_unlikely(&susfs_is_hide_sus_mnts_for_non_su_procs_enabled)) {
 		if (likely(!susfs_is_current_ksu_domain()))
 			return mounts_open_common(inode, file, susfs_show_mountinfo);
 	}
@@ -502,7 +501,7 @@ static int mountinfo_open(struct inode *inode, struct file *file)
 static int mountstats_open(struct inode *inode, struct file *file)
 {
 #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-	if (static_branch_likely(&susfs_is_hide_sus_mnts_for_non_su_procs_enabled)) {
+	if (static_branch_unlikely(&susfs_is_hide_sus_mnts_for_non_su_procs_enabled)) {
 		if (likely(!susfs_is_current_ksu_domain()))
 			return mounts_open_common(inode, file, susfs_show_vfsstat);
 	}

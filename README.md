@@ -1,32 +1,32 @@
 # odin-kernel-susfs
 
-将 SUSFS v2.4.0 移植到小米 MIX 4（odin）的 Inkypen 5.4 内核，并集成 BakaSU 的工作仓。已经验收的 BakaSU + SUSFS v2.1.0 位于 `kaixin886/odin-kernel`；本仓保存 v2.4 移植和可复现构建流程。
+将 [SUSFS v2.3.0](https://gitlab.com/simonpunk/susfs4ksu/-/commit/fb16b41a65180979f05eac837681c4dd0addffd1) 移植到小米 MIX 4（odin）的 Inkypen Linux 5.4 内核，并集成固定版本的 BakaSU。当前 `main` 目标是干净、可复现的 2.3.0 移植；图库/文件可见性回归的 2.4 修复不混入此分支。
 
 ## 固定版本
 
-- 内核基线：Inkypen `kernel_xiaomi_odin`，commit `50e0141b29b62be21632c768e4818348098ac6cd`。
-- SUSFS 来源：`ShirkNeko/susfs4ksu`，commit `6dff25f2b2508f91df309e537771d612dccd201a`；`gki-android12-5.10` 的 v2.4.0 补丁。
-- BakaSU：commit `548d1dda060ca198823d8808804d01f5209ef4a9`。
-- AnyKernel3：固定到构建脚本中的 commit。工具链从固定的 AOSP `android-17.0.0_r1` release tag 选择；优先 `clang-r574158`，若不存在则使用该 tag 中最高版本目录，克隆失败时回退到 LLVM 21。
+- 内核基线：[Inkypen `kernel_xiaomi_odin`](https://github.com/Inkypen79/kernel_xiaomi_odin/commit/50e0141b29b62be21632c768e4818348098ac6cd)，commit `50e0141b29b62be21632c768e4818348098ac6cd`。
+- SUSFS：[`simonpunk/susfs4ksu`](https://gitlab.com/simonpunk/susfs4ksu)，`gki-android12-5.10` 上的 2.3.0 commit `fb16b41a65180979f05eac837681c4dd0addffd1`。其补丁面向 5.10，移植时按 pinned 5.4 基线逐处适配；5.4 中不存在的 `fs/proc/bootconfig.c` 不创建。
+- BakaSU：[commit `548d1dda`](https://github.com/Baka-SU/BakaSU/commit/548d1dda060ca198823d8808804d01f5209ef4a9)。
+- AnyKernel3 固定版本及 AOSP `android-17.0.0_r1` 工具链选择逻辑见 `scripts/build-kernel.sh`。
 
-## 当前状态
+## 5.4 适配要点
 
-- 25 个调用点文件均已审计：20 个需要修改的文件适配后放在 `port/out/`，另有 5 个与 v2.4.0 等价的文件保留基线版本；`port/out/` 还包括 SUSFS 核心三文件。
-- SELinux 两个缺口已补：`selinuxfs.c` 中 `access` 写入处理器，以及适配 5.4 `policydb`、`sidtab` 与策略锁结构的 `security/selinux/ss/services.c`。
-- 新增固定版本构建脚本、手动触发的 GitHub Actions 工作流、AnyKernel3 包装模板，以及幂等的 BakaSU Kconfig 补丁工具。缺失的 `KSU_SUSFS_AVD` 和 `KSU_SUSFS_PRIORITY_UID_FILTER` 会被添加并在配置阶段验证。
-- 移植稿未复制旧 v2.1 的 `no_su` 兼容胶水。
-- **从干净 pinned 源码完整构建和打包已通过**：版本为 `5.4.302-inkypen-v2`，使用 AOSP `android-17.0.0_r1` 中的 `clang-r596125`（Android Clang 22.0.2），生成 arm64 `Image` 和 AnyKernel3 ZIP。
-- Image、配置与 ZIP 的 SHA-256 校验通过；ZIP 完整性检查通过，最终配置启用了 `KSU_SUSFS_AVD` 和 `KSU_SUSFS_PRIORITY_UID_FILTER`。
-- 脚本语法、Kconfig 幂等/异常路径、Actions 工作流静态检查和 `git diff --check` 均已检查通过。**设备侧刷写及 SELinux 策略、布尔值、AVC 回归仍未验证。**
+`port/out/` 包含 2.3 核心、5.4 调用点适配及 SELinux 接线。与 2.3 已匹配的基线文件保持原样，不做无必要覆盖；特别是 `fs/notify/fdinfo.c`、`fs/proc/fd.c`、`fs/readdir.c` 和 `fs/statfs.c`。fsnotify 观察器回调使用 5.4 的 `handle_event`/`iter_info` 接口；`fs/stat.c` 保留 5.4 KSTAT 逻辑和 BakaSU stat hooks，不带 2.4 的扩展 KSTAT。
 
-## 构建
+经过对照 2.3 patch 核对，`fs/proc/base.c`、`kernel/kallsyms.c`、`mm/memory.c`、`security/selinux/avc.c` 也已由 pinned 5.4 基线提供相应逻辑，因此同样不重复覆盖。
 
-在有网络、Bash、Git、Python 3、sudo 和足够磁盘空间的 Linux 环境中运行：
+SELinux fake status/access/context 路径接入 pinned BakaSU 的 helper，不再覆盖 5.4 的 `security/selinux/ss/services.c`，也不引入 2.4 自定义 `ss/susfs.h`。基线 AVC audit fake identity 已与 2.3 逻辑相符，因此不重复改写。
+
+BakaSU 固定版已经包含 2.3 所需的 Kconfig 选项。配置检查器验证这些选项，并拒绝 2.4 的 AVD 和 priority UID filter 选项。
+
+## 构建与验证
 
 ```bash
 bash scripts/build-kernel.sh
 ```
 
-脚本从固定 commit 获取内核、BakaSU 与 AnyKernel3，叠加移植稿，补齐并开启 Kconfig 选项，运行 `odin_defconfig`、`olddefconfig` 和 arm64 `Image` 构建。生成的 Image、内核配置、SHA-256 校验文件和可刷入的 AnyKernel3 ZIP 放在仓库的 `out/` 目录。GitHub Actions 也可从 Actions 页手动触发相同构建。
+脚本从固定 commit 获取内核、BakaSU 与 AnyKernel3，叠加移植、运行 `odin_defconfig`/`olddefconfig` 并构建 arm64 `Image`，随后打包 AnyKernel3 ZIP。默认产物写入仓库 `out/`。也可将 `WORK` 和 `OUT` 指向隔离目录，以避免覆盖已有构建文件；手动触发的 GitHub Actions 运行相同流程。
 
-`port-notes.md` 记录逐文件审计、5.4 API 适配和此次 SELinux/构建接线依据。
+已通过脚本语法、Kconfig 固定版正负验证、`git diff --check` 与 2.4-only API 扫描。完整隔离构建使用 apt.llvm.org LLVM 21.1.8 fallback 成功生成 arm64 `Image` 和 AnyKernel3 ZIP；SHA256 校验和 ZIP 完整性检查均通过。AOSP Clang sparse checkout 遇到 TLS 错误，但未妨碍 fallback 构建。设备侧刷写、启动、SELinux 策略/AVC 与图库/文件访问仍需真机回归，不能以本地构建代替。
+
+`port-notes.md` 记录来源、5.4 适配决策、静态检查和构建验证结果。

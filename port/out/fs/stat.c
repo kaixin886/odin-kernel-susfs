@@ -23,9 +23,7 @@
 
 #include <linux/uaccess.h>
 #include <asm/unistd.h>
-
 #include "internal.h"
-
 #ifdef CONFIG_KSU_SUSFS
 extern struct static_key_true ksu_is_init_rc_hook_enabled;
 extern void ksu_handle_vfs_fstat(int fd, loff_t *kstat_size_ptr);
@@ -33,10 +31,10 @@ extern struct static_key_true ksu_su_compat_enabled;
 extern bool __ksu_is_allow_uid_for_current(uid_t uid);
 extern int ksu_handle_stat(int *dfd, struct filename **filename, int *flags);
 #endif /* CONFIG_KSU_SUSFS */
+
 #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
-extern bool susfs_is_inode_sus_kstat(struct inode *inode, bool *out_is_fuse);
-extern void susfs_sus_kstat_spoof_generic_fillattr(struct inode *inode, struct kstat *stat, u32 result_mask);
-#endif /* CONFIG_KSU_SUSFS_SUS_KSTAT */
+extern void susfs_sus_kstat_spoof_generic_fillattr(struct inode *inode, struct kstat *stat);
+#endif
 
 /**
  * generic_fillattr - Fill in the basic attributes from the inode struct
@@ -62,6 +60,9 @@ void generic_fillattr(struct inode *inode, struct kstat *stat)
 	stat->ctime = inode->i_ctime;
 	stat->blksize = i_blocksize(inode);
 	stat->blocks = inode->i_blocks;
+#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
+	susfs_sus_kstat_spoof_generic_fillattr(inode, stat);
+#endif
 }
 EXPORT_SYMBOL(generic_fillattr);
 
@@ -94,52 +95,19 @@ int vfs_getattr_nosec(const struct path *path, struct kstat *stat,
 	if (IS_AUTOMOUNT(inode))
 		stat->attributes |= STATX_ATTR_AUTOMOUNT;
 
-#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
-	/* port-5.4: upstream also stores real_mount(path->mnt)->mnt_id into
-	 * stat->mnt_id here; 5.4 struct kstat has no mnt_id field and the
-	 * 5.4 statx ABI does not expose it, so only the flag handshake is
-	 * kept. */
-	if (susfs_is_current_app_uid()) {
-		bool is_fuse = false;
-		if (susfs_is_inode_sus_kstat(d_backing_inode(path->dentry), &is_fuse)) {
-			if (!is_fuse)
-				stat->result_mask |= STATX_SUS_KSTAT;
-			stat->result_mask |= STATX_SUS_KSTAT_FUSE;
-		}
-	}
-#endif /* CONFIG_KSU_SUSFS_SUS_KSTAT */
-
 	if (inode->i_op->getattr)
 #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
 	{
 		int err = inode->i_op->getattr(path, stat, request_mask,
 					    query_flags);
-		if (!err) {
-			if (stat->result_mask & STATX_SUS_KSTAT) {
-				susfs_sus_kstat_spoof_generic_fillattr(inode, stat, STATX_SUS_KSTAT);
-				return err;
-			}
-			if (stat->result_mask & STATX_SUS_KSTAT_FUSE) {
-				susfs_sus_kstat_spoof_generic_fillattr(inode, stat, STATX_SUS_KSTAT_FUSE);
-				return err;
-			}
-		}
+		if (!err)
+			susfs_sus_kstat_spoof_generic_fillattr(inode, stat);
 		return err;
-	}
-	if (stat->result_mask & STATX_SUS_KSTAT) {
-		generic_fillattr(inode, stat);
-		susfs_sus_kstat_spoof_generic_fillattr(inode, stat, STATX_SUS_KSTAT);
-		return 0;
-	}
-	if (stat->result_mask & STATX_SUS_KSTAT_FUSE) {
-		generic_fillattr(inode, stat);
-		susfs_sus_kstat_spoof_generic_fillattr(inode, stat, STATX_SUS_KSTAT_FUSE);
-		return 0;
 	}
 #else
 		return inode->i_op->getattr(path, stat, request_mask,
 					    query_flags);
-#endif /* CONFIG_KSU_SUSFS_SUS_KSTAT */
+#endif
 
 	generic_fillattr(inode, stat);
 	return 0;
@@ -205,9 +173,6 @@ int vfs_statx_fd(unsigned int fd, struct kstat *stat,
 		error = vfs_getattr(&f.file->f_path, stat,
 				    request_mask, query_flags);
 #ifdef CONFIG_KSU_SUSFS
-		/* port-5.4: 5.4 has no vfs_fstat() in fs/stat.c (it is the
-		 * fs.h inline over vfs_statx_fd), so the init_rc hook that
-		 * upstream places in vfs_fstat() lives here instead. */
 		if (static_branch_unlikely(&ksu_is_init_rc_hook_enabled))
 			ksu_handle_vfs_fstat(fd, &stat->size);
 #endif /* CONFIG_KSU_SUSFS */
@@ -268,7 +233,7 @@ retry:
 
 orig_flow:
 	error = filename_lookup(dfd, fname, lookup_flags, &path, NULL);
-	/* no putname(fname) here as filename_lookup() has it done for us already */
+	/* filename_lookup() releases fname */
 #else
 	error = user_path_at(dfd, filename, lookup_flags, &path);
 #endif /* CONFIG_KSU_SUSFS */
@@ -276,13 +241,6 @@ orig_flow:
 		goto out;
 
 	error = vfs_getattr(&path, stat, request_mask, flags);
-#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
-	/* port-5.4: upstream clears the SUS_KSTAT bits while bypassing its
-	 * stat->mnt_id assignment; 5.4 has neither the field nor the
-	 * assignment, so only the clearing remains. */
-	if (stat->result_mask & (STATX_SUS_KSTAT_FUSE | STATX_SUS_KSTAT))
-		stat->result_mask &= ~(STATX_SUS_KSTAT_FUSE | STATX_SUS_KSTAT);
-#endif /* CONFIG_KSU_SUSFS_SUS_KSTAT */
 	path_put(&path);
 	if (retry_estale(error, lookup_flags)) {
 		lookup_flags |= LOOKUP_REVAL;
